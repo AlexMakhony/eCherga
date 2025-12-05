@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <title>Черги вантажівок на кордоні України</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+    }
+
+    #map {
+      height: 100%;
+      width: 100%;
+    }
+
+    .legend {
+      background: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .legend-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 2px;
+    }
+
+    .legend-color {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+
+    .legend-color.green { background: #2ecc71; }
+    .legend-color.yellow { background: #f1c40f; }
+    .legend-color.red { background: #e74c3c; }
+    .legend-color.gray { background: #7f8c8d; }
+
+    .popup-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .popup-meta {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 4px;
+    }
+
+    .popup-kpi {
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+
+    .top-panel {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(255,255,255,0.95);
+      padding: 6px 12px;
+      border-radius: 999px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="info" class="top-panel">
+    Завантаження даних про черги…
+  </div>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <!-- Статичні метадані КПП -->
+  <script src="border-data.js"></script>
+
+  <script>
+    // Карта
+    const map = L.map("map").setView([49.0, 24.0], 6);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 10,
+      minZoom: 5,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const infoDiv = document.getElementById("info");
+
+    function getColor(status, waitMinutes) {
+      if (status === "green") return "#2ecc71";
+      if (status === "yellow") return "#f1c40f";
+      if (status === "red") return "#e74c3c";
+
+      // Якщо статус не переданий – визначаємо по часу очікування
+      if (typeof waitMinutes === "number") {
+        if (waitMinutes < 120) return "#2ecc71";
+        if (waitMinutes <= 360) return "#f1c40f";
+        return "#e74c3c";
+      }
+      return "#7f8c8d"; // gray
+    }
+
+    function createMarker(point) {
+      if (!point.lat || !point.lon) return null;
+
+      const color = getColor(point.status, point.wait_minutes);
+      const marker = L.circleMarker([point.lat, point.lon], {
+        radius: 8,
+        fillColor: color,
+        color: "#ffffff",
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.9
+      });
+
+      const trucks = point.trucks_in_queue;
+      const waitMin = point.wait_minutes;
+      const hasData = typeof trucks === "number" && typeof waitMin === "number";
+
+      const waitHours = hasData ? (waitMin / 60).toFixed(1) : "—";
+
+      const updatedAt = point.dataUpdatedAt
+        ? new Date(point.dataUpdatedAt).toLocaleString("uk-UA")
+        : "немає даних";
+
+      const popupHtml = `
+        <div class="popup">
+          <div class="popup-title">${point.name}</div>
+          <div class="popup-meta">
+            Напрямок: ${point.direction || "-"}<br/>
+            Країни: ${point.countryFrom || "UA"} → ${point.countryTo || "?"}
+          </div>
+          <div class="popup-kpi">
+            🚚 У черзі: <strong>${hasData ? trucks : "немає даних"}</strong>
+          </div>
+          <div class="popup-kpi">
+            ⏱ Очікування: <strong>${hasData ? waitHours + " год." : "немає даних"}</strong>
+          </div>
+          <div class="popup-meta">
+            Оновлено: ${updatedAt}
+          </div>
+        </div>
+      `;
+
+      marker.bindPopup(popupHtml);
+      return marker;
+    }
+
+    function renderMarkers(points) {
+      points.forEach(p => {
+        const m = createMarker(p);
+        if (m) m.addTo(map);
+      });
+    }
+
+    // Легенда
+    const legend = L.control({ position: "bottomleft" });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create("div", "legend");
+      div.innerHTML = `
+        <div class="legend-title">Статус черги (вантажівки)</div>
+        <div class="legend-item">
+          <span class="legend-color green"></span> Низьке навантаження (&lt; 2 год)
+        </div>
+        <div class="legend-item">
+          <span class="legend-color yellow"></span> Середнє (2–6 год)
+        </div>
+        <div class="legend-item">
+          <span class="legend-color red"></span> Високе (&gt; 6 год)
+        </div>
+        <div class="legend-item">
+          <span class="legend-color gray"></span> Немає даних
+        </div>
+      `;
+      return div;
+    };
+    legend.addTo(map);
+
+    // ----- Підвантажуємо queues.json -----
+    async function loadQueues() {
+      if (typeof BORDER_POINTS === "undefined") {
+        console.error("BORDER_POINTS не знайдено. Перевір border-data.js");
+        infoDiv.textContent = "Помилка: немає даних про КПП.";
+        return;
+      }
+
+      let points = BORDER_POINTS.map(p => ({ ...p }));
+
+      try {
+        const res = await fetch("queues.json", {
+          cache: "no-store"
+        });
+
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+
+        const data = await res.json();
+        const updatedAtGlobal = data.updated_at || null;
+        const byId = new Map(
+          (data.points || []).map(p => [p.id, p])
+        );
+
+        points = points.map(p => {
+          const q = byId.get(p.id);
+          if (q) {
+            return {
+              ...p,
+              trucks_in_queue: q.trucks_in_queue,
+              wait_minutes: q.wait_minutes,
+              status: q.status,
+              dataUpdatedAt: q.updated_at || updatedAtGlobal
+            };
+          }
+          return {
+            ...p,
+            trucks_in_queue: null,
+            wait_minutes: null,
+            status: "gray",
+            dataUpdatedAt: updatedAtGlobal
+          };
+        });
+
+        infoDiv.textContent =
+          "Дані оновлено: " +
+          (updatedAtGlobal
+            ? new Date(updatedAtGlobal).toLocaleString("uk-UA")
+            : "немає інформації про час оновлення");
+
+      } catch (err) {
+        console.error("Помилка завантаження queues.json:", err);
+        infoDiv.textContent =
+          "Не вдалося завантажити онлайн-дані. Показуємо лише карту КПП.";
+      }
+
+      renderMarkers(points);
+    }
+
+    loadQueues();
+  </script>
+</body>
+</html>
+
